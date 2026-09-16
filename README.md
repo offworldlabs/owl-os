@@ -150,6 +150,48 @@ sudo apt install buildah containers-storage crun curl distrobox \
 edi -v project make owl-os-pi5.yml
 ```
 
+The Pi 4B image configuration is `owl-os-pi4.yml` with its matching
+`configuration/overlay/owl-os-pi4.global.yml`. It uses the existing arm64 Pi 4
+boot specification and leaves the managed radar stack on its current Compose
+manifest by default. This is an image-build option; an adapted card does not
+prove fresh-image boot.
+
+The Pi 4 GPU managed-stack selector is a separate, explicit
+`owl_pi4_gpu_stack: True` playbook parameter. Enable it only with a reviewed
+versioned override from the paired `blah2-arm` change installed at
+`/data/retina-node/compose/pi4-gpu.override.yml`. Set the required
+`owl_pi4_compose_override_src` playbook parameter to the build-side file
+produced by `blah2-arm/deploy/pi4/render-override.py`; the OWL role copies its
+literal content into that persistent location, owned by root. That override must select an
+approved immutable radar image ID or registry digest; this repository does not
+invent a published image tag. The selector installs root-owned
+`/etc/owl/retina-compose.env` so boot, GUI operations, and the watchdog use the
+base manifest plus the persistent override for the one `retina-node` project.
+It preserves the existing `config-merger` service. The boot and watchdog
+preflight fails if either file is absent, Compose rejects the result, or the
+effective radar/API image, labels, GPU selection and render-device mapping
+do not match the opt-in contract, including
+after Mender replaces the managed base manifest. The GUI remains available for
+setup when a manifest is absent, but its Compose actions fail until the files
+are valid. To return to the default path, build without the opt-in parameter;
+do not leave stale drop-ins installed on an adapted card.
+For the pinned `mender-docker-compose` 1.0.0 update module, the role sets its
+supported `DOCKER_COMPOSE_CMD` option through a managed block in
+`/etc/mender/mender-docker-compose.conf`, preserving other settings. The small
+wrapper applies the same persistent override to the module's `new`, `current`,
+or `previous` manifest slot, including the `ps` health query issued outside
+the manifest directory. A local mock executes the installed module's install
+and rollback paths. On-device managed-update behavior still needs validation;
+the updater tracks only base-manifest image IDs for cleanup, so the approved
+override images must remain preloaded and must not be blindly pruned.
+Run the local selector checks with
+`python3 -m unittest discover -s plugins/playbooks/os_setup/roles/pi4_compose_selection/tests -v`.
+That command skips only the installed-module integration when the default
+`/usr/share/mender/modules/v3/docker-compose` is absent. To require the
+captured installed-module install/rollback fixture, set
+`OWL_MENDER_MODULE=/absolute/path/to/captured-1.0.0-script` for the same
+command; an invalid explicit path fails. The test prints the module SHA-256.
+
 **Output artifacts:**
 - `owl-os-vx.x.x.img` - Flashable OS image with A/B partitioning
 - `owl-os-vx.x.x.mender` - OTA update artifact

@@ -186,12 +186,6 @@ fi
 # disconnected devices, and any running setup portal. Never change the link
 # from this fast path; NetworkManager remains the source of association state.
 if [ -f "${STARTED}" ] && [ ! -e "${DOWN_SINCE}" ]; then
-    # Optional read-only NetworkManager probe. Missing, failed or timed-out
-    # probes use the full existing nmcli path, including Ethernet and recovery.
-    if [ -x /usr/local/libexec/owl-nm-wifi-healthy ] && timeout 3 /usr/local/libexec/owl-nm-wifi-healthy; then
-        clear_outage
-        exit 0
-    fi
     fast_devices=$(timeout 2 nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null) || fast_devices=""
     if printf '%s\n' "${fast_devices}" | awk -F: '$2 == "ethernet" && $3 == "connected" { found=1 } END { exit !found }'; then
         clear_outage

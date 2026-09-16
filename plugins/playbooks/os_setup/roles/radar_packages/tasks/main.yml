@@ -423,9 +423,7 @@
       Description=WiFi Connect Captive Portal
       After=NetworkManager.service
       Wants=NetworkManager.service
-      # Run the ethernet watcher alongside the portal so a cable plugged in
-      # after the portal has already started is noticed without a reboot.
-      Wants=ethernet-watch.timer
+      # The Ethernet watcher is started only after the portal process launches.
       # Note: No Before=retina-gui.service - let GUI start immediately
       # wifi-connect will stop it only if captive portal is actually needed
 
@@ -441,7 +439,9 @@
       # Stop retina-gui to free port 80 for captive portal
       ExecStartPre=-/bin/systemctl stop retina-gui.service
       ExecStart=/usr/local/sbin/wifi-connect --portal-ssid node-setup
+      ExecStartPost=/bin/systemctl start ethernet-watch.timer
       # Restart retina-gui after WiFi is configured
+      ExecStopPost=-/bin/systemctl stop ethernet-watch.timer
       ExecStopPost=-/bin/systemctl start retina-gui.service
       Restart=on-failure
       RestartSec=60
@@ -511,116 +511,11 @@
 
 - name: Install RSPduo watchdog script
   copy:
+    src: blah2_rspduo_restart.bash
     dest: /opt/blah2/script/blah2_rspduo_restart.bash
+    owner: root
+    group: root
     mode: '0755'
-    content: |
-      #!/bin/bash
-
-      # Run script with a crontab to automatically restart on error.
-      # Checks the API to see if data is still being pushed through.
-
-      COMPOSE_FILE=/data/mender-docker-compose/current/manifests/docker-compose.yaml
-      PROJECT=retina-node
-      MODE_FILE=/data/retina-gui/mode.txt
-      GRACE_PERIOD_SECONDS=60
-      RESTART_COUNT_STATE=/run/blah2-rspduo-watchdog.count
-
-      # The same lock retina-gui takes for every operation that drives this compose
-      # project (see its restart_lock.py). Taken with flock(1) below.
-      RESTART_LOCK=/data/retina-gui/restart.lock
-
-      # retina-gui's calibrate.lock (see its device_state.py). Auto-Calibrate owns
-      # the SDR for the whole of a run - restarting the stack underneath it does not
-      # just race, it silently corrupts the result: the run applies gain/LNA settings
-      # via blah2's live retune API, which a `compose down`/`up` reverts to whatever
-      # config.yml says, while the run carries on attributing its readings to
-      # settings that are no longer in effect.
-      CALIBRATE_LOCK=/data/retina-gui/calibrate.lock
-      # Mirrors CALIBRATE_LOCK_TIMEOUT in retina-gui's device_state.py - if the GUI
-      # considers a lock this old to be stale, so should this script, or a crashed
-      # calibration would silence the watchdog indefinitely.
-      CALIBRATE_LOCK_TIMEOUT_SECONDS=1200
-
-      # Don't interfere when spectrum or sdrconnect mode is active - blah2 is intentionally stopped
-      if [ -f "$MODE_FILE" ] && { [ "$(cat $MODE_FILE)" = "spectrum" ] || [ "$(cat $MODE_FILE)" = "sdrconnect" ]; }; then
-        exit 0
-      fi
-
-      # Don't interrupt an auto-calibration run (see CALIBRATE_LOCK above).
-      if [ -f "$CALIBRATE_LOCK" ]; then
-        LOCK_MTIME=$(stat -c %Y "$CALIBRATE_LOCK" 2>/dev/null || echo 0)
-        LOCK_AGE=$(( $(date +%s) - LOCK_MTIME ))
-        if [ "$LOCK_AGE" -lt "$CALIBRATE_LOCK_TIMEOUT_SECONDS" ]; then
-          exit 0
-        fi
-      fi
-
-      # Detect blah2 crash-looping under Docker's own restart policy. RestartCount
-      # only increments when the daemon relaunches the *same* container after it
-      # exits, and resets to 0 whenever this script (or a GUI Apply) recreates it
-      # via `compose down`/`up`. If blah2 is dying and restarting on its own faster
-      # than this 5-minute cron cadence, StartedAt is always fresh - the grace
-      # period below would skip every single run forever, silently masking the
-      # crash loop instead of ever reaching the recovery step.
-      RESTART_COUNT=$(docker inspect -f '{% raw %}{{.RestartCount}}{% endraw %}' blah2 2>/dev/null)
-      PREV_RESTART_COUNT=$(cat "$RESTART_COUNT_STATE" 2>/dev/null)
-      [ -n "$RESTART_COUNT" ] && echo "$RESTART_COUNT" > "$RESTART_COUNT_STATE"
-
-      CRASH_LOOPING=false
-      if [ -n "$RESTART_COUNT" ] && [ -n "$PREV_RESTART_COUNT" ] && [ "$RESTART_COUNT" -gt "$PREV_RESTART_COUNT" ]; then
-        CRASH_LOOPING=true
-        echo "blah2 is crash-looping (RestartCount $PREV_RESTART_COUNT -> $RESTART_COUNT since last check) - bypassing grace period"
-      fi
-
-      # Give blah2 a grace period after a (re)start before judging it stale - it
-      # needs time to re-acquire the RSPduo and start producing fresh map data,
-      # whether the restart just came from this script or a GUI config Apply.
-      # Skipped while crash-looping (see above) so the recovery step below still runs.
-      if [ "$CRASH_LOOPING" = false ]; then
-        CONTAINER_STARTED=$(docker inspect -f '{% raw %}{{.State.StartedAt}}{% endraw %}' blah2 2>/dev/null)
-        if [ -n "$CONTAINER_STARTED" ]; then
-          STARTED_EPOCH=$(date -d "$CONTAINER_STARTED" +%s 2>/dev/null)
-          NOW_EPOCH=$(date +%s)
-          if [ -n "$STARTED_EPOCH" ] && [ $((NOW_EPOCH - STARTED_EPOCH)) -lt $GRACE_PERIOD_SECONDS ]; then
-            exit 0
-          fi
-        fi
-      fi
-
-      # --max-time so an unresponsive API cannot stall this script indefinitely.
-      # Without it a hung endpoint - the exact condition being checked for - leaves
-      # one instance blocked while cron keeps starting more every 5 minutes.
-      FIRST_CHAR=$(curl -s --max-time 10 127.0.0.1:3000/api/map | head -c1)
-      TIMESTAMP=$(curl -s --max-time 10 127.0.0.1:3000/api/map | head -c23 | tail -c10)
-      CURR_TIMESTAMP=$(date +%s)
-      DIFF_TIMESTAMP=$(($CURR_TIMESTAMP-$TIMESTAMP))
-
-      if [[ "$FIRST_CHAR" != "{" ]] || [[ $DIFF_TIMESTAMP -gt 60 ]]; then
-        # Take the same lock retina-gui holds for a config apply, and hold it for
-        # the whole down/up. This replaces a `pgrep -f "docker compose -p $PROJECT"`
-        # guard that could not work: retina-gui's apply spends ~30s in an SDRplay
-        # settle window with no compose process running at all, so pgrep saw an idle
-        # system and let this script fire `compose down` straight into the middle of
-        # an apply - which is what leaves containers renamed to <hash>_<name> and the
-        # daemon rejecting the real name as already in use. Confirmed live: during
-        # that window the lock is held and no compose process exists.
-        #
-        # -n (don't wait): if a restart is already in flight it will very likely
-        # resolve what this check just detected, and cron comes back in 5 minutes
-        # regardless. Waiting would only stack up instances.
-        mkdir -p "$(dirname "$RESTART_LOCK")" 2>/dev/null || true
-        exec 9>"$RESTART_LOCK" || exit 0
-        if ! flock -n 9; then
-          echo "A stack restart is already in flight - skipping this check"
-          exit 0
-        fi
-
-        docker compose -p $PROJECT -f $COMPOSE_FILE down
-        kill -9 $(pgrep -f "sdrplay_apiService") 2>/dev/null || true
-        systemctl restart sdrplay.service
-        docker compose -p $PROJECT -f $COMPOSE_FILE up -d
-        echo "Successfully restarted blah2"
-      fi
 
 - name: Install RSPduo watchdog cron job
   copy:
@@ -629,4 +524,3 @@
     content: |
       # RSPduo health check: restart retina-node stack if blah2 API data is stale (>60s)
       */5 * * * *  root  /opt/blah2/script/blah2_rspduo_restart.bash
-

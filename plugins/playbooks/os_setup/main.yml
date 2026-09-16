@@ -84,6 +84,9 @@
     - role: radar_packages # Install Radar Packages
       become: True
       become_user: root
+    - role: owl_native_helpers # Build optional read-only WiFi and Docker probes
+      become: True
+      become_user: root
     - role: wifi_reconnect # Rejoin the saved network after an outage
       become: True
       become_user: root
@@ -96,6 +99,10 @@
     - role: radar_data_bootstrap # Configure /data/ persistent partition
       become: True
       become_user: root
+    - role: pi4_compose_selection # Optional persistent Pi 4 radar override
+      become: True
+      become_user: root
+      when: owl_pi4_gpu_stack | default(False) | bool
     - role: cloudflared_persistence # Cloudflare tunnel with persistent token
       become: True
       become_user: root

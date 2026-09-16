@@ -1,0 +1,63 @@
+#!/bin/sh
+# Supported DOCKER_COMPOSE_CMD hook for the pinned mender-docker-compose 1.0.0
+# update module. Keep its project and arguments; add the persistent Pi 4
+# override to whichever manifest slot that module is acting on.
+set -eu
+
+selector=/etc/owl/retina-compose.env
+if [ ! -r "$selector" ]; then
+  echo "Missing Pi 4 Compose selector: $selector" >&2
+  exit 1
+fi
+. "$selector"
+case "${COMPOSE_FILE:-}" in
+  /*:/*) override=${COMPOSE_FILE#*:} ;;
+  *) echo 'Pi 4 Compose selector requires absolute base and override paths' >&2; exit 1 ;;
+esac
+case "$override" in
+  *:*) echo 'Pi 4 Compose selector has more than two files' >&2; exit 1 ;;
+esac
+if [ ! -f "$override" ]; then
+  echo "Missing Pi 4 Compose override: $override" >&2
+  exit 1
+fi
+
+if [ "${1:-}" = version ]; then
+  /usr/bin/python3 /usr/local/libexec/owl-retina-compose-verify --override "$override"
+  exec /usr/bin/docker compose "$@"
+fi
+
+if [ "$#" -lt 3 ] || [ "$1" != --project-name ] || [ "$2" != retina-node ]; then
+  echo 'Unexpected Mender Compose command or project' >&2
+  exit 1
+fi
+case "$3" in
+  up|down|logs|ps) ;;
+  *) echo "Unsupported Mender Compose action: $3" >&2; exit 1 ;;
+esac
+
+store=/data/mender-docker-compose
+here=$(pwd -P)
+case "$here" in
+  "$store"/new/manifests|"$store"/current/manifests|"$store"/previous/manifests)
+    base=$here/docker-compose.yaml ;;
+  *)
+    if [ "$3" != ps ]; then
+      echo "Mender Compose action outside a manifest directory: $here" >&2
+      exit 1
+    fi
+    # wait_healthy in the installed module calls ps from its original cwd.
+    # During install new exists; after rollback previous has become current.
+    if [ -f "$store/new/manifests/docker-compose.yaml" ]; then
+      base=$store/new/manifests/docker-compose.yaml
+    else
+      base=$store/current/manifests/docker-compose.yaml
+    fi ;;
+esac
+
+COMPOSE_FILE=$base:$override
+COMPOSE_PROFILES=
+export COMPOSE_FILE COMPOSE_PROFILES
+/usr/local/libexec/owl-retina-compose-check
+cd "$(dirname "$base")"
+exec /usr/bin/docker compose "$@"

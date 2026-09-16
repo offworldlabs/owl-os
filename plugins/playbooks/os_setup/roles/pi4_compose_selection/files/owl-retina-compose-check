@@ -1,0 +1,27 @@
+#!/bin/sh
+# Fail visibly if Mender replaced the base manifest or the persistent Pi 4
+# override was not provisioned; never fall back to the default radar image.
+set -eu
+: "${COMPOSE_FILE:?COMPOSE_FILE is required}"
+case "$COMPOSE_FILE" in
+  *:*) ;;
+  *) echo 'Pi 4 Compose selection requires base and override' >&2; exit 1 ;;
+esac
+base=${COMPOSE_FILE%%:*}
+override=${COMPOSE_FILE#*:}
+case "$override" in
+  *:*) echo 'Pi 4 Compose selection has more than two files' >&2; exit 1 ;;
+esac
+for path in "$base" "$override"; do
+  case "$path" in
+    /*) ;;
+    *) echo "Compose path must be absolute: $path" >&2; exit 1 ;;
+  esac
+  if [ ! -f "$path" ]; then
+    echo "Required Compose file is missing: $path" >&2
+    exit 1
+  fi
+done
+cd "$(dirname "$base")"
+effective=$(/usr/bin/docker compose -p retina-node config --format json)
+printf '%s\n' "$effective" | /usr/bin/python3 /usr/local/libexec/owl-retina-compose-verify

@@ -14,6 +14,17 @@
     name: edi-boot-shim
     install_recommends: no
 
+- name: Install the Pi4 kernel-matched EDI boot specification.
+  copy:
+    src: boot.spec.owl-pi4.arm64
+    dest: /etc/edi-boot-shim/boot.spec.owl-pi4.arm64
+    owner: root
+    group: root
+    mode: '0644'
+  when:
+    - ebs_bootloader_type == "raspberry-pi"
+    - mender_device_type == "pi4-v3"
+
 - name: Create boot firmware directory.
   file:
     path: "{{ bootloader_location }}"

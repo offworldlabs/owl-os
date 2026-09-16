@@ -1,0 +1,110 @@
+---
+- name: Require a reviewed literal Pi 4 Compose override source
+  assert:
+    that:
+      - owl_pi4_compose_override_src | default('') | length > 0
+    fail_msg: "Set owl_pi4_compose_override_src to the build-side rendered override from the paired blah2-arm change"
+
+- name: Create Pi 4 Compose selection directory
+  file:
+    path: /etc/owl
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create persistent directory for the approved Pi 4 override
+  file:
+    path: /data/retina-node/compose
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the literal approved Pi 4 Compose override on persistent data
+  copy:
+    src: "{{ owl_pi4_compose_override_src }}"
+    dest: /data/retina-node/compose/pi4-gpu.override.yml
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Install shared Compose file selection
+  copy:
+    dest: /etc/owl/retina-compose.env
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      COMPOSE_FILE={{ retina_node_manifests_path }}/docker-compose.yaml:/data/retina-node/compose/pi4-gpu.override.yml
+      COMPOSE_PROFILES=
+
+- name: Install Pi 4 Compose preflight
+  copy:
+    src: owl-retina-compose-check
+    dest: /usr/local/libexec/owl-retina-compose-check
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install Pi 4 effective Compose verifier
+  copy:
+    src: owl-retina-compose-verify.py
+    dest: /usr/local/libexec/owl-retina-compose-verify
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install Pi 4 Mender Compose command wrapper
+  copy:
+    src: owl-mender-compose
+    dest: /usr/local/libexec/owl-mender-compose
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Select the Pi 4 wrapper in the supported Mender Compose configuration
+  blockinfile:
+    path: /etc/mender/mender-docker-compose.conf
+    create: true
+    owner: root
+    group: root
+    mode: '0644'
+    marker: '# {mark} OWL Pi 4 Compose selection'
+    block: |
+      DOCKER_COMPOSE_CMD="/usr/local/libexec/owl-mender-compose"
+
+- name: Create Compose service override directories
+  file:
+    path: /etc/systemd/system/{{ item }}.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - retina-node
+    - retina-gui
+
+- name: Select the persistent Pi 4 Compose files for boot
+  copy:
+    dest: /etc/systemd/system/retina-node.service.d/20-pi4-compose.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      ConditionPathExists=
+
+      [Service]
+      EnvironmentFile=/etc/owl/retina-compose.env
+      ExecStartPre=/usr/local/libexec/owl-retina-compose-check
+
+- name: Select the persistent Pi 4 Compose files for GUI operations
+  copy:
+    dest: /etc/systemd/system/retina-gui.service.d/20-pi4-compose.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Service]
+      EnvironmentFile=/etc/owl/retina-compose.env

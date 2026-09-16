@@ -1,0 +1,102 @@
+---
+# Compile the two read-only fast-path probes on the target image.  Their callers
+# retain the shell/CLI recovery paths whenever a probe is unavailable or fails.
+
+- name: Install native helper build and runtime dependencies
+  apt:
+    name:
+      - build-essential
+      - libsystemd0
+      - libsystemd-dev
+      - libcurl4
+      - libcurl4-openssl-dev
+      - libjson-c5
+      - libjson-c-dev
+    state: present
+
+- name: Create native helper source directory
+  file:
+    path: /usr/local/src/owl-native-helpers
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install native helper sources
+  copy:
+    src: "{{ item }}"
+    dest: "/usr/local/src/owl-native-helpers/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - nm-wifi-healthy.cpp
+    - WifiPolicy.h
+    - docker_metadata.c
+
+- name: Create native helper executable directory
+  file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Build NetworkManager health probe into a temporary executable
+  command:
+    argv:
+      - g++
+      - -std=c++17
+      - -O2
+      - -Wall
+      - -Wextra
+      - -Werror
+      - /usr/local/src/owl-native-helpers/nm-wifi-healthy.cpp
+      - -lsystemd
+      - -o
+      - /usr/local/libexec/.owl-nm-wifi-healthy.new
+  changed_when: false
+
+- name: Install NetworkManager health probe atomically after a successful build
+  copy:
+    src: /usr/local/libexec/.owl-nm-wifi-healthy.new
+    dest: /usr/local/libexec/owl-nm-wifi-healthy
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Remove NetworkManager health probe temporary executable
+  file:
+    path: /usr/local/libexec/.owl-nm-wifi-healthy.new
+    state: absent
+
+- name: Build Docker metadata probe into a temporary executable
+  command:
+    argv:
+      - cc
+      - -std=c17
+      - -O2
+      - -Wall
+      - -Wextra
+      - -Werror
+      - /usr/local/src/owl-native-helpers/docker_metadata.c
+      - -lcurl
+      - -ljson-c
+      - -o
+      - /usr/local/libexec/.owl-docker-metadata.new
+  changed_when: false
+
+- name: Install Docker metadata probe atomically after a successful build
+  copy:
+    src: /usr/local/libexec/.owl-docker-metadata.new
+    dest: /usr/local/libexec/owl-docker-metadata
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Remove Docker metadata probe temporary executable
+  file:
+    path: /usr/local/libexec/.owl-docker-metadata.new
+    state: absent
