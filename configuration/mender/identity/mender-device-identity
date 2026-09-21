@@ -2,33 +2,87 @@
 
 # Mender device identity script
 #
-# Generates a human-readable node_id from the Raspberry Pi serial number.
-# Format: ret + last 8 hex chars of serial (e.g., ret7dd2cb0d)
+# The single implementation of what a node_id is. Nothing else derives one:
+# owl-mdns-identity calls this script rather than repeating the rule, because
+# the two copies that used to exist drifted and the fleet advertised one
+# identity while enrolling under another.
 #
-# The node_id is generated once and persisted at /data/mender/node_id.
-# Falls back to MAC address for non-RPi hardware.
+# Format: retg + the first 15 hex characters of
+#
+#     SHA-256("rpi-cpuinfo-serial:" + <the whole 16-character Pi serial>)
+#
+# e.g. retgec420d03ea4b064. 60 bits, against 32 for the ret<8 hex> format this
+# replaces, which took the last 8 characters of the same serial and so threw
+# away half of a value that was already unique per board.
+#
+# The node_id is generated once and persisted at /data/mender/node_id, which
+# every consumer reads in preference to deriving. Falls back to reporting a MAC
+# address on non-Pi hardware, which is a different Mender attribute key and is
+# deliberately not a node_id.
 
 set -ue
 
 NODE_ID_FILE=/data/mender/node_id
 MAC_FILE=/sys/class/net/{{ 'end0' if mender_device_type in ['pi4-v3', 'pi5-v3'] else 'eth0' }}/address
 
-# Return existing node_id if already generated
+# ---------------------------------------------------------------- the format
+#
+# Four properties of this construction, none of them incidental:
+#
+#   The ":" separator is mandatory. Hashing the concatenation without it means
+#   "ab" + "cd" and "a" + "bcd" produce the same digest, so two different
+#   sources could collide by construction rather than by chance.
+#
+#   The family tag is fixed forever. Changing it changes every id derived under
+#   it, so a board would come back from a reflash as a stranger. A second
+#   hardware family gets its own tag (dmi-product-uuid, tpm-ek) and its own
+#   namespace; it never changes this one.
+#
+#   The family is hashed, not shown. Making it visible would mean reporting it
+#   as a second Mender identity attribute, and identity data is hashed whole:
+#   adding an attribute changes every device's identity at once and re-enrols
+#   the entire fleet.
+#
+#   The whole serial, lowercased, never the last 8. Canonicalisation is part of
+#   the format rather than an implementation detail, because a change to it is
+#   indistinguishable from a change to the format.
+FAMILY_TAG="rpi-cpuinfo-serial"
+ID_PREFIX="retg"
+ID_HEX_CHARS=15
+
+derive_from_serial() {
+    local serial="$1"
+    local digest
+    digest=$(printf '%s' "${FAMILY_TAG}:${serial}" | sha256sum | cut -c1-${ID_HEX_CHARS})
+    printf '%s%s' "${ID_PREFIX}" "${digest}"
+}
+
+# Return existing node_id if already generated.
+#
+# Unconditional, and first. A persisted id is this board's identity whatever
+# format it is in: the fleet still carries ret<8 hex> ids from before this
+# change, and re-deriving would rename a live node, orphan its Mender record
+# and tear down its remote access. Migration is a deliberate act performed on
+# one node at a time, never a side effect of an update landing.
 if [ -f "${NODE_ID_FILE}" ]; then
-    NODE_ID=$(cat "${NODE_ID_FILE}" | tr -d '[:space:]')
+    NODE_ID=$(tr -d '[:space:]' < "${NODE_ID_FILE}")
     if [ -n "${NODE_ID}" ]; then
         echo "node_id=${NODE_ID}"
         exit 0
     fi
 fi
 
-# Generate node_id from RPi serial (first boot)
+# Generate node_id from the Pi serial (first boot)
 if grep -q "Raspberry Pi\|BCM" /proc/cpuinfo 2>/dev/null; then
-    SERIAL=$(grep "^Serial" /proc/cpuinfo | cut -d: -f2 | tr -d ' ')
-    if [ -n "${SERIAL}" ] && [ "${SERIAL}" != "0000000000000000" ]; then
-        # Take last 8 hex characters
-        SERIAL_SUFFIX="${SERIAL: -8}"
-        NODE_ID="ret${SERIAL_SUFFIX}"
+    SERIAL=$(grep "^Serial" /proc/cpuinfo | cut -d: -f2 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+
+    # Exactly 16 lowercase hex, and not the all-zeros value some boards report
+    # when the OTP read fails. A serial we cannot trust is not one to hash: the
+    # result would look like a perfectly good identity and be shared by every
+    # board with the same fault.
+    if printf '%s' "${SERIAL}" | grep -qE '^[0-9a-f]{16}$' \
+       && [ "${SERIAL}" != "0000000000000000" ]; then
+        NODE_ID=$(derive_from_serial "${SERIAL}")
 
         # Persist for future calls (atomic write)
         mkdir -p "$(dirname ${NODE_ID_FILE})"
