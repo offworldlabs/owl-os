@@ -35,14 +35,26 @@ log() { echo "owl-mdns-identity: $*"; }
 
 # ---------------------------------------------------------------- the node_id
 #
-# Must agree exactly with configuration/mender/identity/mender-device-identity.
-# Two formats are live in the fleet and both are valid: ret + 16 hex (current,
-# the whole serial) and ret + 8 hex (legacy, the last 8 only). The persisted
-# file is checked first and wins, which is what keeps an enrolled legacy node on
-# the identity it already has — the same reason that script reads it first.
+# Delegated, never reimplemented. There is exactly one rule for what a node_id
+# is (ret plus the last 8 hex characters of the Pi's serial) and exactly one
+# implementation of it, in the Mender identity script, which is also the only
+# writer of ${NODE_ID_FILE}.
+#
+# This function used to derive the id a second time, and the two copies drifted.
+# The local copy preferred the whole 16-character serial, so on a first boot,
+# before the Mender client had run and written the file, the node advertised
+# ret<16 hex> on mDNS while Mender went on to enrol it as ret<8 hex>. Nothing
+# ordered this script after enrolment, so the divergence lasted until the next
+# reboot and there was no warning that it had happened.
+#
+# Calling the same script removes the second copy rather than resynchronising
+# it, and fixes that first boot at the root: the call persists the file, so the
+# name Avahi probes is the identity Mender then enrols.
+MENDER_IDENTITY=/usr/share/mender/identity/mender-device-identity
+
 derive_node_id() {
+    local persisted
     if [ -f "${NODE_ID_FILE}" ]; then
-        local persisted
         persisted=$(tr -d '[:space:]' < "${NODE_ID_FILE}")
         if [ -n "${persisted}" ]; then
             echo "${persisted}"
@@ -50,23 +62,25 @@ derive_node_id() {
         fi
     fi
 
-    if ! grep -q "Raspberry Pi\|BCM" /proc/cpuinfo 2>/dev/null; then
-        return 1
-    fi
+    [ -x "${MENDER_IDENTITY}" ] || return 1
 
-    local serial
-    serial=$(grep "^Serial" /proc/cpuinfo | cut -d: -f2 | tr -d ' ' | tr '[:upper:]' '[:lower:]')
-    if [ -z "${serial}" ] || [ "${serial}" = "0000000000000000" ]; then
-        return 1
-    fi
+    # Emits `node_id=<id>` where it can derive one, `mac=<address>` where it
+    # cannot. Only the first is an identity: a MAC is not a node_id, Mender does
+    # not enrol it as one, and a name that follows a swappable NIC is worse than
+    # no name at all.
+    local output
+    output=$("${MENDER_IDENTITY}" 2>/dev/null) || return 1
 
-    if printf '%s' "${serial}" | grep -qE '^[0-9a-f]{16}$'; then
-        echo "ret${serial}"
-    elif printf '%s' "${serial: -8}" | grep -qE '^[0-9a-f]{8}$'; then
-        echo "ret${serial: -8}"
-    else
-        return 1
-    fi
+    case "${output}" in
+        node_id=*) ;;
+        *) return 1 ;;
+    esac
+
+    local derived
+    derived=$(printf '%s' "${output#node_id=}" | tr -d '[:space:]')
+    [ -n "${derived}" ] || return 1
+
+    echo "${derived}"
 }
 
 # A name we cannot derive is not a name we should invent. Falling back to the
