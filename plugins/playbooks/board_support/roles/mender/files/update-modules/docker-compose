@@ -1,0 +1,369 @@
+#!/bin/sh
+# Copyright 2025 Northern.tech AS
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+# Uncomment the line below to get a very verbose output from this Update Module.
+# set -x
+
+set -e
+
+STATE="$1"
+FILES="$2"
+TEMP_DIR="$FILES"/tmp
+
+JQ_CMD="jq"
+TAR_CMD="tar"
+DOCKER_CMD="docker"
+DOCKER_COMPOSE_CMD=""
+
+# Can be overriden by mender-docker-compose.conf
+WAIT_TIMEOUT=120
+
+# Allow overriding the config file path, primarily for tests.
+if [ -n "$MENDER_DOCKER_COMPOSE_CONFIG_FILE" ]; then
+    CONFIG_FILE="$MENDER_DOCKER_COMPOSE_CONFIG_FILE"
+else
+    CONFIG_FILE="/etc/mender/mender-docker-compose.conf"
+fi
+PERSISTENT_STORE="/data/mender-docker-compose"
+
+if test -f "$CONFIG_FILE"; then
+    . "$CONFIG_FILE"
+fi
+
+discover_docker_compose() {
+    local rc=0
+
+    if test -n "$DOCKER_COMPOSE_CMD"; then
+        $DOCKER_COMPOSE_CMD version < /dev/null > /dev/null 2>&1
+        rc=$?
+    elif $DOCKER_CMD compose version < /dev/null > /dev/null 2>&1; then
+        DOCKER_COMPOSE_CMD="$DOCKER_CMD compose"
+    elif docker-compose version < /dev/null > /dev/null 2>&1; then
+        DOCKER_COMPOSE_CMD="docker-compose"
+    else
+        echo "ERROR: could not find executable for Docker Compose" 1>&2
+        echo "ERROR: is Docker Compose installed?" 1>&2
+        rc=1
+    fi
+
+    return $rc
+}
+
+discover_requirements() {
+    local rc=0
+
+    if ! $JQ_CMD --version > /dev/null 2>&1; then
+        echo "ERROR: $JQ_CMD is required. Exiting."
+        rc=1
+    fi
+    if ! $TAR_CMD --version < /dev/null > /dev/null 2>&1; then
+        echo "ERROR: $TAR_CMD is required. Exiting."
+        rc=1
+    fi
+    if ! $DOCKER_CMD --version > /dev/null < /dev/null 2>&1; then
+        echo "ERROR: cannot find command \"${DOCKER_CMD}\" in PATH"
+        echo "ERROR: is Docker installed?"
+        rc=1
+    fi
+    if ! $DOCKER_CMD version > /dev/null; then
+        echo "ERROR: failed to connect with the Docker API"
+        rc=1
+    fi
+    discover_docker_compose || rc=1
+
+    return $rc
+}
+
+parse_metadata() {
+    # $1 -- meta-data JSON file
+    # $2 -- header-info JSON file
+
+    PROJECT_NAME=$(jq -r .project_name < "$1")
+    version=$(jq -r .version < "$1")
+    ARTIFACT_NAME=$(jq -r .artifact_provides.artifact_name < "$2")
+
+    if [ "${PROJECT_NAME}" = "" ] || [ "${PROJECT_NAME}" = "null" ]; then
+        echo "ERROR: project_name is required in meta-data. Exiting."
+        return 1
+    fi
+
+    if test "${version}" = ""; then
+        echo "ERROR: version is required in meta-data. Exiting."
+        return 1
+    elif test "${version}" != "1"; then
+        echo "ERROR: only version 1 is supported, not version ${version}. Exiting."
+        return 1
+    fi
+
+    if test "${ARTIFACT_NAME}" = ""; then
+        echo "ERROR: artifact_name is required. Exiting."
+        return 1
+    fi
+}
+
+container_image_load() {
+    local input_file="$1"
+
+    $DOCKER_CMD image load --input "$input_file"
+}
+
+comp_stop() {
+    local manifests_dir="$1/manifests"
+    local project_name=$(cat "$1/project_name")
+    local rc=0
+
+    echo "Stopping $1"
+    (   
+        cd "$manifests_dir"
+        $DOCKER_COMPOSE_CMD \
+            --project-name "$project_name" \
+            down >> ../compose.log 2>&1
+    ) || rc=$?
+
+    if test "$rc" -ne 0; then
+        echo "Failed to stop composition, logs follow:" 1>&2
+        cat "$manifests_dir/../compose.log" 1>&2
+        (   
+            cd "$manifests_dir"
+            $DOCKER_COMPOSE_CMD \
+                --project-name "$project_name" \
+                logs 1>&2
+        )
+        return $rc
+    fi
+
+    return 0
+}
+
+# For docker compose 2.0 and onwards you can use `--wait` and `--wait-timeout`
+# In order to not break backwards compatibility we use our own
+# logic to check if the containers started by a composition are healthy
+wait_healthy() {
+    local project_name="$1"
+    local timeout="$WAIT_TIMEOUT"
+    local states
+
+    while [ "$timeout" -gt 0 ]; do
+        local container_ids=$($DOCKER_COMPOSE_CMD --project-name "$project_name" ps --quiet)
+        if [ -n "$container_ids" ]; then
+            states=$($DOCKER_CMD inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}no_check{{end}}' $container_ids 2> /dev/null)
+            local not_ready_count=$(echo "$states" | grep -v -E "^running:(healthy|no_check)$" | wc -l)
+            if [ "$not_ready_count" -eq 0 ]; then
+                return 0
+            fi
+        fi
+        sleep 1
+        timeout=$((timeout - 1))
+    done
+
+    echo "Timeout reached. Some containers are not healthy/running." 1>&2
+    echo "Container states at timeout:" 1>&2
+    echo "$states" 1>&2
+    return 1
+}
+
+comp_start() {
+    local manifests_dir="$1/manifests"
+    local project_name=$(cat "$1/project_name")
+    local rc=0
+
+    echo "Starting $1"
+    (   
+        cd "$manifests_dir"
+        $DOCKER_COMPOSE_CMD \
+            --project-name "$project_name" \
+            up --detach > ../compose.log 2>&1
+    ) || rc=$?
+
+    if test "$rc" -eq 0; then
+        wait_healthy "$project_name" || rc=$?
+    fi
+
+    if test "$rc" -ne 0; then
+        echo "Failed to start composition, logs follow:" 1>&2
+        cat "$manifests_dir/../compose.log" 1>&2
+        (   
+            cd "$manifests_dir"
+            $DOCKER_COMPOSE_CMD \
+                --project-name "$project_name" \
+                logs 1>&2
+        )
+    fi
+    return "$rc"
+}
+
+get_manifest_image_ids() {
+    local manifest="$1"
+    local id
+
+    local image
+    for image in $(grep -E "^\s+image:" "$manifest" | cut -d: -f2-); do
+        id=$($DOCKER_CMD images --format "{{json .ID}}" "$image" | head -n1 | tr -d '"')
+        if [ -n "$id" ]; then
+            echo "$id"
+        fi
+    done
+}
+
+install_artifact() {
+    local artifact_files="$1"
+    local rc=0
+
+    echo "Installing docker-compose artifact ${ARTIFACT_NAME}"
+
+    if test -d "${PERSISTENT_STORE}/current"; then
+        echo "saving existing composition as -previous"
+        rm -rf "${PERSISTENT_STORE}/previous" # should not be there, but just in case
+        mv -v "${PERSISTENT_STORE}/current" "${PERSISTENT_STORE}/previous"
+    else
+        echo "no previous composition found"
+    fi
+
+    # If the previous version is present, we need to make sure it's stopped.
+    # XXX: let docker compose figure this out?
+    if test -d "${PERSISTENT_STORE}/previous"; then
+        comp_stop "${PERSISTENT_STORE}/previous"
+    else
+        echo "previous composition not present; nothing to stop."
+    fi
+
+    if test ! -d "$TEMP_DIR"; then
+        echo "ERROR: $TEMP_DIR does not exist"
+        return 1
+    fi
+
+    echo "extracting images"
+    $TAR_CMD -xzf "${artifact_files}/images.tar.gz" -C "$TEMP_DIR"
+    echo "extracting manifests"
+    $TAR_CMD -xf "${artifact_files}/manifests.tar" -C "$TEMP_DIR"
+
+    mkdir -p "${PERSISTENT_STORE}/new"
+    cp -r "${TEMP_DIR}/manifests" "${PERSISTENT_STORE}/new/"
+    echo "${PROJECT_NAME}" > "${PERSISTENT_STORE}/new/project_name"
+
+    local image
+    for image in "${TEMP_DIR}/images/"*; do
+        if ! container_image_load "$image"; then
+            # Make sure to gather the IDs of loaded images below for cleanup.
+            rc=2
+            break
+        fi
+    done
+
+    local manifest
+    for manifest in "${PERSISTENT_STORE}/new/manifests/"*; do
+        get_manifest_image_ids "$manifest" >> "${PERSISTENT_STORE}/new/image_ids"
+    done
+    if [ $rc -ne 0 ]; then
+        return $rc
+    fi
+
+    comp_start "${PERSISTENT_STORE}/new" 2>&1
+}
+
+commit_artifact() {
+    mv -v "${PERSISTENT_STORE}/new" "${PERSISTENT_STORE}/current"
+    if [ -d "${PERSISTENT_STORE}/previous" ]; then
+        mv -v "${PERSISTENT_STORE}/previous" "${PERSISTENT_STORE}/cleanup"
+    fi
+}
+
+rollback_artifact() {
+    echo "Rolling back docker-compose artifact ${ARTIFACT_NAME}"
+    if [ ! -d "${PERSISTENT_STORE}/new" ] && [ ! -d "${PERSISTENT_STORE}/previous" ]; then
+        if test -d "${PERSISTENT_STORE}/current"; then
+            # This may seem weird (and it is!), but rollback can be requested even
+            # after a commit. In that case we rollback from the committed version to
+            # the one pushed for cleanup.
+            echo "Rolling back after a Commit"
+
+            # Let's set the stage for the rest of this function.
+            mv -v "${PERSISTENT_STORE}/current" "${PERSISTENT_STORE}/new"
+            if [ -d "${PERSISTENT_STORE}/cleanup" ]; then
+                mv -v "${PERSISTENT_STORE}/cleanup" "${PERSISTENT_STORE}/previous"
+            fi
+        else
+            echo "Nothing to rollback to!"
+            return 1
+        fi
+    fi
+
+    if [ -d "${PERSISTENT_STORE}/new" ]; then
+        # Stopping may fail in case starting failed which we don't know.
+        comp_stop "${PERSISTENT_STORE}/new" || true
+        mv -v "${PERSISTENT_STORE}/new" "${PERSISTENT_STORE}/cleanup"
+    fi
+
+    if [ -d "${PERSISTENT_STORE}/previous" ]; then
+        mv -v "${PERSISTENT_STORE}/previous" "${PERSISTENT_STORE}/current"
+        comp_start "${PERSISTENT_STORE}/current" 2>&1
+    else
+        echo "No previous composition to roll back to"
+    fi
+
+    return 0
+}
+
+cleanup() {
+    local rc=0
+
+    if ! test -d "${PERSISTENT_STORE}/cleanup"; then
+        return 0
+    fi
+
+    local image_id
+    while read -r image_id; do
+        if ! grep -qF "$image_id" "${PERSISTENT_STORE}/current/image_ids" 2> /dev/null; then
+            $DOCKER_CMD rmi "$image_id" || rc=1
+        fi
+    done < "${PERSISTENT_STORE}/cleanup/image_ids"
+    rm -rf "${PERSISTENT_STORE}/cleanup"
+
+    return $rc
+}
+
+case "$STATE" in
+    NeedsArtifactReboot)
+        echo "No"
+        ;;
+
+    SupportsRollback)
+        echo "Yes"
+        ;;
+
+    ArtifactInstall)
+        discover_requirements
+        parse_metadata "$FILES"/header/meta-data "$FILES"/header/header-info
+        install_artifact "$FILES"/files
+        ;;
+
+    ArtifactCommit)
+        discover_requirements
+        parse_metadata "$FILES"/header/meta-data "$FILES"/header/header-info
+        commit_artifact
+        ;;
+
+    ArtifactRollback)
+        discover_requirements
+        parse_metadata "$FILES"/header/meta-data "$FILES"/header/header-info
+        rollback_artifact
+        ;;
+
+    Cleanup)
+        discover_requirements
+        parse_metadata "$FILES"/header/meta-data "$FILES"/header/header-info
+        cleanup
+        ;;
+esac
