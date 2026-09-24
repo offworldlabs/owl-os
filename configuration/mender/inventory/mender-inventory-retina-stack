@@ -1,0 +1,63 @@
+#!/bin/sh
+
+# Reports the retina-node stack's health from outside the stack.
+#
+# retina-telemetry runs inside the same compose project, so a node whose stack
+# is down goes silent instead of reporting unhealthy. ret9573ecda sat with no
+# radar for four weeks that way. mender-updated runs this every inventory poll
+# (600 s) whether or not a single container is up.
+#
+#   retina_stack             up | degraded | down | absent
+#   retina_stack_running     project containers running
+#   retina_stack_restarting  project containers in a restart loop
+#   retina_blah2             blah2's state (running, restarting, exited, missing)
+#   retina_env_ok            manifests/.env parses (false: NUL bytes)
+#   retina_compose_ok        compose can load the project
+#   retina_mode              radar | spectrum | sdrconnect (retina-gui's mode.txt)
+#
+# In spectrum and sdrconnect modes blah2 is stopped on purpose, so it does not
+# make the stack degraded there.
+
+MANIFESTS="${RETINA_STACK_MANIFESTS:-/data/mender-docker-compose/current/manifests}"
+MODE_FILE="${RETINA_STACK_MODE_FILE:-/data/retina-gui/mode.txt}"
+
+if [ ! -f "$MANIFESTS/docker-compose.yaml" ]; then
+    echo retina_stack=absent
+    exit 0
+fi
+
+mode=radar
+[ -s "$MODE_FILE" ] && mode=$(cat "$MODE_FILE")
+
+env_ok=true
+if [ -f "$MANIFESTS/.env" ] \
+    && [ "$(tr -d '\000' < "$MANIFESTS/.env" | wc -c)" -ne "$(wc -c < "$MANIFESTS/.env")" ]; then
+    env_ok=false
+fi
+
+compose_ok=true
+(cd "$MANIFESTS" && timeout 20 docker compose -p retina-node config -q > /dev/null 2>&1) || compose_ok=false
+
+count() {
+    timeout 10 docker ps -q --filter label=com.docker.compose.project=retina-node --filter "status=$1" 2>/dev/null | wc -l
+}
+running=$(count running)
+restarting=$(count restarting)
+blah2=$(timeout 10 docker inspect -f '{{.State.Status}}' blah2 2>/dev/null) || blah2=missing
+
+state=up
+if [ "$running" -eq 0 ]; then
+    state=down
+elif [ "$restarting" -gt 0 ] || [ "$env_ok" = false ] || [ "$compose_ok" = false ] \
+    || { [ "$mode" = radar ] && [ "$blah2" != running ]; }; then
+    state=degraded
+fi
+
+echo "retina_stack=$state"
+echo "retina_stack_running=$running"
+echo "retina_stack_restarting=$restarting"
+echo "retina_blah2=$blah2"
+echo "retina_env_ok=$env_ok"
+echo "retina_compose_ok=$compose_ok"
+echo "retina_mode=$mode"
+exit 0

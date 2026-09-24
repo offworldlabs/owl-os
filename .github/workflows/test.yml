@@ -1,8 +1,8 @@
 name: Tests
 
-# The forked docker-compose Update Module runs every retina-node install on
-# every node. These tests run the real module under /bin/sh (dash on Ubuntu,
-# as on the nodes) against a stub docker and jq, with real tar payloads.
+# The forked docker-compose Update Module, retina-env-guard and the stack-health
+# inventory script run as root on every node. These tests run the real scripts
+# under /bin/sh (dash on Ubuntu, as on the nodes) against a stub docker.
 
 on:
   push:
@@ -18,7 +18,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install 'pytest>=8.0'
-      - name: Module is executable
-        run: test -x plugins/playbooks/board_support/roles/mender/files/update-modules/docker-compose
+      - name: Scripts are executable
+        run: |
+          test -x plugins/playbooks/board_support/roles/mender/files/update-modules/docker-compose
+          test -x plugins/playbooks/os_setup/roles/radar_data_bootstrap/files/retina-env-guard
+          test -x configuration/mender/inventory/mender-inventory-retina-stack
       - name: Tests
-        run: pytest tests/update-modules/
+        run: pytest tests/
