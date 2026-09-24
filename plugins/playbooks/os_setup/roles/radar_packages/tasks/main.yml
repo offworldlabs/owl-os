@@ -592,6 +592,9 @@
       # one instance blocked while cron keeps starting more every 5 minutes.
       FIRST_CHAR=$(curl -s --max-time 10 127.0.0.1:3000/api/map | head -c1)
       TIMESTAMP=$(curl -s --max-time 10 127.0.0.1:3000/api/map | head -c23 | tail -c10)
+      # No answer, or not a number, reads as stale. Left empty, the subtraction
+      # below failed with "operand expected" whenever blah2-api was down.
+      case "$TIMESTAMP" in ''|*[!0-9]*) TIMESTAMP=0 ;; esac
       CURR_TIMESTAMP=$(date +%s)
       DIFF_TIMESTAMP=$(($CURR_TIMESTAMP-$TIMESTAMP))
 
