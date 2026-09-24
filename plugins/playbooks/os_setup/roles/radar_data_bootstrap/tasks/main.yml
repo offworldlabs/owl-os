@@ -93,6 +93,17 @@
       ADSBLOL_ENABLED=false
       ADSBLOL_RADIUS=40
 
+# 3a. Boot guard: set aside a compose .env that compose cannot parse, so a
+# power cut during the config-merger's write cannot keep the stack down
+# through every reboot. See the script's header.
+- name: Install retina-env-guard
+  copy:
+    src: retina-env-guard
+    dest: /usr/local/sbin/retina-env-guard
+    mode: '0755'
+    owner: root
+    group: root
+
 # 3. Create systemd service for retina-node auto-start after OS updates
 - name: Create retina-node auto-start service
   copy:
@@ -113,6 +124,8 @@
       RemainAfterExit=yes
       WorkingDirectory={{ retina_node_manifests_path }}
       Environment="RETINA_NODE_PATH={{ retina_node_manifests_path }}"
+      # "-": the guard is best effort and must never stop the stack starting.
+      ExecStartPre=-/usr/local/sbin/retina-env-guard
       ExecStart=/bin/bash -c '/usr/bin/docker compose -p retina-node run --rm config-merger && /usr/bin/docker compose -p retina-node up -d --remove-orphans'
       StartLimitBurst=3
       StartLimitIntervalSec=300

@@ -1,0 +1,40 @@
+#!/bin/sh
+# Set aside a compose .env that compose cannot parse, before retina-node.service
+# starts the stack.
+#
+# The config-merger writes manifests/.env seconds after every boot, and a power
+# cut during that write has left it entirely NUL (ret9573ecda, 2026-08-27).
+# Compose then refuses to load the project at all, including the
+# `run config-merger` that would regenerate the file, so the node stays down
+# through every reboot until someone removes it by hand. Moving it aside lets
+# compose fall back to defaults for one start, and the config-merger writes a
+# good one from user.yml. The retina-node artifact's preflight does the same
+# during an install; this covers the boots in between.
+#
+# Best effort: nothing is deleted, and it always exits 0.
+
+MANIFESTS="${RETINA_ENV_GUARD_MANIFESTS:-/data/mender-docker-compose/current/manifests}"
+env_file="$MANIFESTS/.env"
+
+[ -f "$env_file" ] || exit 0
+
+reason=""
+if [ "$(tr -d '\000' < "$env_file" | wc -c)" -ne "$(wc -c < "$env_file")" ]; then
+    reason="contains NUL bytes"
+elif compose_err=$(cd "$MANIFESTS" && docker compose -p retina-node config -q 2>&1); then
+    :
+else
+    case "$compose_err" in
+        *"$env_file"*|*"/.env:"*) reason="compose cannot parse it" ;;
+    esac
+fi
+[ -n "$reason" ] || exit 0
+
+aside="$env_file.corrupt-$(date -u +%Y%m%dT%H%M%SZ)"
+if mv "$env_file" "$aside"; then
+    sync
+    echo "retina-env-guard: set aside $env_file ($reason) as $aside; the config-merger regenerates it"
+else
+    echo "retina-env-guard: could not set aside $env_file ($reason)"
+fi
+exit 0
