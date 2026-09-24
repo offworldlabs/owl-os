@@ -174,6 +174,29 @@
     - mender-configure
     - mender-docker-compose
 
+# --- docker-compose Update Module: owl-os fork ---
+# The packaged module stops the running stack before it loads the new images,
+# rolls back into the live stack when an install fails early, and fails a
+# committed deployment over an image that is already gone. The fork fixes all
+# three; see the FORK: comments in files/update-modules/docker-compose.
+# dpkg-divert moves the packaged file aside rather than overwriting it, so apt
+# stays consistent and the upstream module is kept for comparison or undo.
+# It is diverted outside modules/v3, where Mender would list it as a module.
+
+- name: Divert the packaged docker-compose Update Module.
+  command: >-
+    dpkg-divert --local --rename
+    --divert /usr/share/mender/docker-compose.upstream
+    --add /usr/share/mender/modules/v3/docker-compose
+  args:
+    creates: /usr/share/mender/docker-compose.upstream
+
+- name: Install the owl-os fork of the docker-compose Update Module.
+  copy:
+    src: update-modules/docker-compose
+    dest: /usr/share/mender/modules/v3/docker-compose
+    mode: '0755'
+
 # --- Rootfs state scripts (update status tracking for retina-gui) ---
 
 - name: Create Mender rootfs scripts directory.

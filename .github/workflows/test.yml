@@ -1,0 +1,24 @@
+name: Tests
+
+# The forked docker-compose Update Module runs every retina-node install on
+# every node. These tests run the real module under /bin/sh (dash on Ubuntu,
+# as on the nodes) against a stub docker and jq, with real tar payloads.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  update-modules:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install 'pytest>=8.0'
+      - name: Module is executable
+        run: test -x plugins/playbooks/board_support/roles/mender/files/update-modules/docker-compose
+      - name: Tests
+        run: pytest tests/update-modules/
