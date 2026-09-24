@@ -13,6 +13,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+# FORK: this is mender-docker-compose 1.0.0-1+debian+bookworm
+# (sha256 5be40882cbb1ecb5944ffd4a523c4c667fea5660d9f908b1c05754ced04771fd),
+# installed by owl-os over the packaged file with dpkg-divert. Every change
+# from upstream is marked "FORK:". Re-check them before moving
+# mender_docker_compose_version.
+
 # Uncomment the line below to get a very verbose output from this Update Module.
 # set -x
 
@@ -29,6 +35,11 @@ DOCKER_COMPOSE_CMD=""
 
 # Can be overriden by mender-docker-compose.conf
 WAIT_TIMEOUT=120
+
+# FORK: the lock retina-gui and the RSPduo watchdog (owl-os radar_packages)
+# take before they restart this compose project. See take_restart_lock.
+RESTART_LOCK="/data/retina-gui/restart.lock"
+RESTART_LOCK_WAIT=600
 
 # Allow overriding the config file path, primarily for tests.
 if [ -n "$MENDER_DOCKER_COMPOSE_CONFIG_FILE" ]; then
@@ -217,27 +228,53 @@ get_manifest_image_ids() {
     done
 }
 
+# FORK: hold retina's restart lock until this process exits. Upstream renamed
+# current/ away before its long image load, so nothing else could restart the
+# stack during an install. The fork keeps current/ running through the load,
+# and without the lock the watchdog restarted it mid-install (Josh Test Node 2,
+# 2026-09-24 10:00:03). The watchdog gives up when the lock is held; retina-gui
+# waits for it.
+take_restart_lock() {
+    mkdir -p "$(dirname "$RESTART_LOCK")"
+    exec 9> "$RESTART_LOCK"
+    if ! flock -w "$RESTART_LOCK_WAIT" 9; then
+        echo "ERROR: could not take $RESTART_LOCK within ${RESTART_LOCK_WAIT}s" 1>&2
+        return 1
+    fi
+}
+
+# FORK: start the new composition with the node's own .env. new/manifests is
+# copied out of the artifact and has none, so compose would interpolate the
+# defaults, and the config-merger only writes the real .env after compose has
+# already done so. A NUL-filled .env is not copied: compose cannot parse it.
+seed_env() {
+    local env="${PERSISTENT_STORE}/current/manifests/.env"
+
+    if [ -f "$env" ] && [ "$(tr -d '\000' < "$env" | wc -c)" -eq "$(wc -c < "$env")" ]; then
+        cp "$env" "${PERSISTENT_STORE}/new/manifests/.env"
+        echo "seeded the new composition with the current .env"
+    fi
+}
+
 install_artifact() {
     local artifact_files="$1"
     local rc=0
 
     echo "Installing docker-compose artifact ${ARTIFACT_NAME}"
 
-    if test -d "${PERSISTENT_STORE}/current"; then
-        echo "saving existing composition as -previous"
-        rm -rf "${PERSISTENT_STORE}/previous" # should not be there, but just in case
-        mv -v "${PERSISTENT_STORE}/current" "${PERSISTENT_STORE}/previous"
-    else
-        echo "no previous composition found"
-    fi
+    # FORK: everything up to "Only now" prepares the new composition while the
+    # current one keeps running. Upstream stopped the running stack first and
+    # then spent minutes extracting and loading images, so every install was an
+    # outage of that length, and a power cut inside it left nothing running.
+    #
+    # new/ is created before anything can fail. If an install stops with
+    # current/ but neither new/ nor previous/, rollback_artifact reads it as a
+    # rollback after a commit, and stops the live stack and moves it aside.
+    rm -rf "${PERSISTENT_STORE}/new"
+    mkdir -p "${PERSISTENT_STORE}/new"
+    : > "${PERSISTENT_STORE}/new/image_ids"
 
-    # If the previous version is present, we need to make sure it's stopped.
-    # XXX: let docker compose figure this out?
-    if test -d "${PERSISTENT_STORE}/previous"; then
-        comp_stop "${PERSISTENT_STORE}/previous"
-    else
-        echo "previous composition not present; nothing to stop."
-    fi
+    take_restart_lock
 
     if test ! -d "$TEMP_DIR"; then
         echo "ERROR: $TEMP_DIR does not exist"
@@ -249,9 +286,9 @@ install_artifact() {
     echo "extracting manifests"
     $TAR_CMD -xf "${artifact_files}/manifests.tar" -C "$TEMP_DIR"
 
-    mkdir -p "${PERSISTENT_STORE}/new"
     cp -r "${TEMP_DIR}/manifests" "${PERSISTENT_STORE}/new/"
     echo "${PROJECT_NAME}" > "${PERSISTENT_STORE}/new/project_name"
+    seed_env
 
     local image
     for image in "${TEMP_DIR}/images/"*; do
@@ -268,6 +305,23 @@ install_artifact() {
     done
     if [ $rc -ne 0 ]; then
         return $rc
+    fi
+
+    # FORK: Only now touch the running stack.
+    if test -d "${PERSISTENT_STORE}/current"; then
+        echo "saving existing composition as -previous"
+        rm -rf "${PERSISTENT_STORE}/previous" # should not be there, but just in case
+        mv -v "${PERSISTENT_STORE}/current" "${PERSISTENT_STORE}/previous"
+    else
+        echo "no previous composition found"
+    fi
+
+    # If the previous version is present, we need to make sure it's stopped.
+    # XXX: let docker compose figure this out?
+    if test -d "${PERSISTENT_STORE}/previous"; then
+        comp_stop "${PERSISTENT_STORE}/previous"
+    else
+        echo "previous composition not present; nothing to stop."
     fi
 
     comp_start "${PERSISTENT_STORE}/new" 2>&1
@@ -300,6 +354,20 @@ rollback_artifact() {
         fi
     fi
 
+    # FORK: install_artifact prepares new/ before it touches the running
+    # stack. If it failed, or lost power, before that point, current/ is still
+    # the live composition and there is no previous/. Upstream would now run
+    # `down` from new/, and compose would take the live stack down with it,
+    # because both share one project name.
+    if [ -d "${PERSISTENT_STORE}/new" ] && [ ! -d "${PERSISTENT_STORE}/previous" ] \
+        && [ -d "${PERSISTENT_STORE}/current" ]; then
+        echo "install stopped before the running composition was touched; leaving it running"
+        mv -v "${PERSISTENT_STORE}/new" "${PERSISTENT_STORE}/cleanup"
+        return 0
+    fi
+
+    take_restart_lock
+
     if [ -d "${PERSISTENT_STORE}/new" ]; then
         # Stopping may fail in case starting failed which we don't know.
         comp_stop "${PERSISTENT_STORE}/new" || true
@@ -326,6 +394,14 @@ cleanup() {
     local image_id
     while read -r image_id; do
         if ! grep -qF "$image_id" "${PERSISTENT_STORE}/current/image_ids" 2> /dev/null; then
+            # FORK: an image that is already gone is not a failure. The same
+            # ID can appear twice in image_ids, and upstream then failed a
+            # deployment whose install had already committed (Fairforest B,
+            # retina-node v0.4.3.0).
+            if ! $DOCKER_CMD image inspect "$image_id" > /dev/null 2>&1; then
+                echo "image $image_id already removed"
+                continue
+            fi
             $DOCKER_CMD rmi "$image_id" || rc=1
         fi
     done < "${PERSISTENT_STORE}/cleanup/image_ids"
