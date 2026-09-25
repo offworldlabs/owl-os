@@ -1,0 +1,24 @@
+#!/bin/sh
+
+# Reports the support email this device's owner entered, if they entered one.
+#
+# This is the contact address from the setup wizard's contact step and
+# Configuration > How we reach you: whom to get in touch with about this node.
+# It is not the claim address in telemetry-claim.json, which decides who owns
+# the node. retina-gui keeps the two apart on purpose, and so does this.
+#
+# retina-gui removes the file once every contact box is empty, so a node whose
+# owner gave nothing reports nothing rather than an empty value.
+#
+# retina-gui checks only the length of this field, not its shape, and a newline
+# in it would let the owner's text add inventory attributes of its own. Anything
+# that is not a single local@domain token is dropped rather than reported.
+
+CONTACT_FILE="${RETINA_CONTACT_FILE:-/data/retina-gui/telemetry-contact.json}"
+
+[ -f "${CONTACT_FILE}" ] || exit 0
+
+jq -r '.email | strings
+       | select(test("^[^@\\s[:cntrl:]]+@[^@\\s[:cntrl:]]+$"))
+       | "contact_email=" + .' "${CONTACT_FILE}" 2>/dev/null
+exit 0

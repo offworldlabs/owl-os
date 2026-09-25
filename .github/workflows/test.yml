@@ -23,5 +23,6 @@ jobs:
           test -x plugins/playbooks/board_support/roles/mender/files/update-modules/docker-compose
           test -x plugins/playbooks/os_setup/roles/radar_data_bootstrap/files/retina-env-guard
           test -x configuration/mender/inventory/mender-inventory-retina-stack
+          test -x configuration/mender/inventory/mender-inventory-retina-contact
       - name: Tests
         run: pytest tests/
