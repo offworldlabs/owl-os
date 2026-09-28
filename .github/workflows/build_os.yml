@@ -123,6 +123,16 @@ jobs:
         run: |
           mkdir -p configuration/mender
           echo "mender_tenant_token: \"${{ secrets.MENDER_TENANT_TOKEN }}\"" > configuration/mender/mender_custom.yml
+
+      # Same arrangement as the tenant token above. The repository is public,
+      # so the key cannot be committed; configuration/retina-gui/retina-gui.yml
+      # carries an empty default and this file overrides it. A fork or a build
+      # without the secret still succeeds -- its tower maps just come back
+      # stamped "API KEY REQUIRED".
+      - name: Configure CARTO basemap key
+        run: |
+          mkdir -p configuration/retina-gui
+          echo "carto_api_key: \"${{ secrets.CARTO_API_KEY }}\"" > configuration/retina-gui/retina-gui_custom.yml
       
       - name: Build OS image
         run: |
