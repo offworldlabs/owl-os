@@ -164,6 +164,39 @@
     state: directory
     mode: '0755'
 
+# 8a. CARTO basemap key for the setup wizard's tower map.
+#
+# On the rootfs rather than on /data, and that is the whole point. /data
+# survives an OS update, so a file the image writes there only ever reaches a
+# freshly flashed node. /etc is replaced wholesale by every A/B update, so this
+# reaches the existing fleet on the next release and rotates with it.
+#
+# retina-gui's unit reads this file and then /data/retina-gui/carto.env, in
+# that order, so a node given its own key by hand keeps it across updates.
+- name: Load the retina-gui deployment values (CI's custom file wins)
+  include_vars: "{{ item }}"
+  with_first_found:
+    - "{{ retina_gui_config_directory }}/retina-gui_custom.yml"
+    - "{{ retina_gui_config_directory }}/retina-gui.yml"
+
+- name: Create /etc/retina-gui for deployment values
+  file:
+    path: /etc/retina-gui
+    state: directory
+    mode: '0755'
+
+# Skipped entirely when no key was supplied, rather than written empty: the
+# rootfs is built fresh every image, so "absent" cannot be a stale leftover,
+# and an empty assignment would look like a key that had stopped working.
+- name: Write the CARTO basemap key
+  copy:
+    content: "CARTO_API_KEY={{ carto_api_key }}\n"
+    dest: /etc/retina-gui/carto.env
+    mode: '0600'
+    owner: root
+    group: root
+  when: carto_api_key | default('') | length > 0
+
 # 9. Install and enable systemd service
 - name: Copy retina-gui systemd service
   copy:

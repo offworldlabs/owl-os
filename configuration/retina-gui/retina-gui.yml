@@ -1,0 +1,14 @@
+---
+# Deployment values for retina-gui that must not live in a git repository.
+#
+# carto_api_key is the CARTO basemap key the setup wizard's tower map draws
+# tiles with. Empty here on purpose: this repository is public, and a key in
+# its history outlives every rotation. CI writes the real value to
+# retina-gui_custom.yml beside this file, which is gitignored and wins via the
+# with_first_found in radar_data_bootstrap -- the same arrangement
+# configuration/mender/ uses for the Mender tenant token.
+#
+# A build without the secret is a working image, not a failed one. CARTO does
+# not refuse an unkeyed request: it answers HTTP 200 with every tile stamped
+# "API KEY REQUIRED", which is the state every node is in today.
+carto_api_key: ""

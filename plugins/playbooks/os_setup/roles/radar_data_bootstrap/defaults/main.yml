@@ -1,0 +1,4 @@
+---
+# Mirrors mender_config_directory in the board_support mender role, so the
+# committed default and the CI-written override are found the same way.
+retina_gui_config_directory: "{{ edi_project_directory }}/configuration/retina-gui"
