@@ -54,7 +54,7 @@
     dest: /etc/apt/sources.list.d/
 
 - name: Configure APT to prefer Mender repo over Debian.
-  copy:
+  template:
     src: mender-pin.pref
     dest: /etc/apt/preferences.d/mender
     mode: 0644

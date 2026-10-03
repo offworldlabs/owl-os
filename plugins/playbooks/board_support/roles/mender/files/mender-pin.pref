@@ -1,7 +1,0 @@
-Package: mender-*
-Pin: origin downloads.mender.io
-Pin-Priority: 1000
-
-Package: mender-*
-Pin: release o=Debian
-Pin-Priority: 100

@@ -1,0 +1,28 @@
+# mender-client4 depends on mender-auth and mender-update at exactly its own
+# version. Only mender-client4 is named with a version when it is installed, so
+# without this first rule the mender-* rule below governs the two siblings, and
+# that rule prefers whatever is newest on Mender's server. While the version in
+# versions.yml happens to be the newest, everything agrees. The moment Mender
+# publishes anything newer, the siblings resolve forward, contradict the exact
+# version asked for, and apt reports the pinned version as having no
+# installation candidate even though it is sitting in the index.
+#
+# That is not hypothetical: it broke three builds on 2026-10-03, when Mender
+# regenerated their repository and published 5.1.1 against a pinned 5.1.0.
+#
+# Pinning the three co-versioned packages together, from the same variable the
+# install task uses, keeps them in step and leaves versions.yml the only place
+# a Mender client version is chosen.
+Package: mender-client4 mender-auth mender-update
+Pin: version {{ mender_client_version }}
+Pin-Priority: 1001
+
+# Debian ships its own, much older mender-client. These two rules keep Mender's
+# repository winning for every mender-* package regardless.
+Package: mender-*
+Pin: origin downloads.mender.io
+Pin-Priority: 1000
+
+Package: mender-*
+Pin: release o=Debian
+Pin-Priority: 100
