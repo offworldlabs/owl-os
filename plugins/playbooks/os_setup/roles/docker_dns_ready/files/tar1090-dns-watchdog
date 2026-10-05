@@ -1,0 +1,97 @@
+#!/bin/bash
+#
+# Restart the tar1090 container when it cannot resolve hostnames.
+#
+# Backstop for the boot race the docker_dns_ready role prevents. See that role
+# for the mechanism. This exists because the race is latched: a container that
+# starts with a dead resolver keeps it for its whole lifetime, and only a
+# container restart regenerates it.
+#
+# The trigger is deliberately "the container cannot resolve", not "the feed has
+# no data":
+#
+#   * It catches the masked case. On a node with its own ADS-B receiver the
+#     proxy serves X-Data-Source: local and looks healthy while the remote
+#     fallback is dead. Measured on fairforest-b, which sat like that for
+#     nearly two hours and would have gone unnoticed indefinitely.
+#
+#   * It does not fire during a genuine upstream outage. adsb.retina.fm served
+#     HTTP 200 with an empty sky for about two weeks in September. If DNS
+#     resolves, a restart cannot help, and restarting every cycle would be
+#     pointless churn that masks the real problem.
+#
+# Always exits 0. A watchdog that fails loudly in cron mail is noise; the only
+# thing it should ever do is restart a container, or nothing.
+
+set -u
+
+CONTAINER=tar1090
+FALLBACK_HOST=adsb.retina.fm
+# Long enough that a host-level DNS outage cannot turn this into a restart
+# loop. The fault it fixes happens once, at boot.
+COOLDOWN_SECONDS=${COOLDOWN_SECONDS:-900}
+STATE=${STATE:-/run/tar1090-dns-watchdog.last}
+# The same lock retina-gui takes for operations that drive the compose
+# project, and that blah2_rspduo_restart.bash takes before a down/up. A single
+# container restart is lighter than either, but it must not land in the middle
+# of one.
+RESTART_LOCK=${RESTART_LOCK:-/data/retina-gui/restart.lock}
+
+log() { echo "tar1090-dns-watchdog: $*"; }
+
+# Nothing to do if the container is not running: either the stack is down, or
+# spectrum/sdrconnect mode has stopped parts of it, and neither is ours to fix.
+if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" != "true" ]; then
+    exit 0
+fi
+
+# Test the hosts the proxy is actually configured to use, so this follows
+# config rather than hardcoding one. Strips scheme, path and port from each
+# entry of ADSB_UPSTREAMS.
+hosts=$(docker exec "$CONTAINER" sh -c 'echo "${ADSB_UPSTREAMS:-}"' 2>/dev/null \
+    | tr ',' '\n' \
+    | sed -e 's|^[a-zA-Z][a-zA-Z0-9+.-]*://||' -e 's|/.*$||' -e 's|:[0-9]*$||' \
+    | grep -v '^[[:space:]]*$')
+[ -z "$hosts" ] && hosts=$FALLBACK_HOST
+
+# One name resolving is enough to prove the resolver works. Only when every
+# name fails is this the fault being guarded against.
+for h in $hosts; do
+    if docker exec "$CONTAINER" getent hosts "$h" >/dev/null 2>&1; then
+        exit 0
+    fi
+done
+
+now=$(date +%s)
+last=$(cat "$STATE" 2>/dev/null || echo 0)
+case "$last" in ''|*[!0-9]*) last=0 ;; esac
+
+if [ $(( now - last )) -lt "$COOLDOWN_SECONDS" ]; then
+    log "cannot resolve any of [$(echo $hosts | tr '\n' ' ')], but restarted $(( now - last ))s ago; waiting out the ${COOLDOWN_SECONDS}s cooldown"
+    exit 0
+fi
+
+# The lock is a courtesy, not a correctness requirement: this restarts one
+# container, where the operations the lock exists for recreate the whole
+# project. So a lock we cannot even open must not stop the restart. An earlier
+# version exited 0 here, which meant an unwritable lock path silently disabled
+# this watchdog for good: the same class of quiet failure it exists to end.
+mkdir -p "$(dirname "$RESTART_LOCK")" 2>/dev/null || true
+if exec 9>"$RESTART_LOCK" 2>/dev/null; then
+    if ! flock -n 9; then
+        log "a stack restart is already in flight; skipping"
+        exit 0
+    fi
+else
+    log "cannot open $RESTART_LOCK; proceeding without it"
+fi
+
+# Losing the timestamp disables the cooldown, which is what stops a
+# host-level DNS outage turning this into a restart every five minutes. Say so
+# rather than swallowing it.
+if ! echo "$now" > "$STATE" 2>/dev/null; then
+    log "WARNING cannot write $STATE; the restart cooldown will not be enforced"
+fi
+log "cannot resolve any of [$(echo $hosts | tr '\n' ' ')] from inside $CONTAINER; restarting it"
+docker restart "$CONTAINER" >/dev/null 2>&1 || log "docker restart $CONTAINER failed"
+exit 0

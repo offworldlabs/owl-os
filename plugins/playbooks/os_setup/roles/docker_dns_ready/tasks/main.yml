@@ -94,3 +94,55 @@
       #      itself waits forever. -k follows up with SIGKILL.
       #   3. the leading '-', so systemd ignores a non-zero exit either way
       ExecStartPre=-/usr/bin/timeout -k 10 70 /usr/local/sbin/wait-for-dns-config 60
+
+# Backstop. The ExecStartPre above prevents the boot race; this recovers a
+# container that is already latched into it, including on nodes updated before
+# that fix ships. The trigger is "the container cannot resolve", not "the feed
+# is empty": see the script header for why that distinction is load bearing.
+- name: Install tar1090-dns-watchdog
+  copy:
+    src: tar1090-dns-watchdog
+    dest: /usr/local/sbin/tar1090-dns-watchdog
+    mode: '0755'
+
+- name: Create tar1090-dns-watchdog systemd service
+  copy:
+    dest: /etc/systemd/system/tar1090-dns-watchdog.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Restart tar1090 when its container cannot resolve hostnames
+      After=docker.service
+      Wants=docker.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/tar1090-dns-watchdog
+      # Each docker exec is bounded by the daemon, but this is the backstop for
+      # an unresponsive daemon wedging the run, and stops runs stacking up.
+      TimeoutStartSec=120
+
+- name: Create tar1090-dns-watchdog systemd timer
+  copy:
+    dest: /etc/systemd/system/tar1090-dns-watchdog.timer
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Check that tar1090 can still resolve its ADS-B upstreams
+
+      [Timer]
+      # Well clear of the ~20s the stack takes to come up, so the first check
+      # does not count a still-starting container against it.
+      OnBootSec=180s
+      # The fault happens once, at boot, and is latched until something acts.
+      # Five minutes bounds the outage without polling the daemon needlessly.
+      OnUnitActiveSec=300s
+
+      [Install]
+      WantedBy=timers.target
+
+- name: Enable tar1090-dns-watchdog timer for boot
+  file:
+    src: /etc/systemd/system/tar1090-dns-watchdog.timer
+    dest: /etc/systemd/system/timers.target.wants/tar1090-dns-watchdog.timer
+    state: link
