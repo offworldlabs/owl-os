@@ -1,0 +1,37 @@
+#!/bin/bash
+#
+# Block until /etc/resolv.conf names a resolver a container could actually use.
+#
+# Run as ExecStartPre on docker.service. See the docker_dns_ready role for why.
+#
+# Always exits 0, including on timeout. A failing ExecStartPre would stop the
+# Docker daemon from starting at all, which is far worse than the DNS race this
+# guards against.
+
+set -u
+
+RESOLV=${RESOLV_CONF:-/etc/resolv.conf}
+TIMEOUT_SECONDS=${1:-60}
+
+# A usable nameserver is one that is not a loopback address. Both of the
+# loopback resolvers that show up here are unreachable from inside a
+# bridge-network container's namespace: 127.0.0.53 is systemd-resolved's stub
+# on the host, and 127.0.0.11 is Docker's own embedded resolver, which is what
+# the container is told to use in the first place.
+usable_nameserver() {
+    awk '/^[[:space:]]*nameserver[[:space:]]/ { print $2 }' "$RESOLV" 2>/dev/null \
+        | grep -qvE '^(127\.|::1$)'
+}
+
+deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+
+while ! usable_nameserver; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "wait-for-dns-config: no non-loopback nameserver in $RESOLV after ${TIMEOUT_SECONDS}s; starting Docker anyway" >&2
+        exit 0
+    fi
+    sleep 1
+done
+
+echo "wait-for-dns-config: $RESOLV has a usable nameserver"
+exit 0

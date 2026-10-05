@@ -1,0 +1,80 @@
+---
+# Playbook: docker_dns_ready
+# Version: 0.1.0
+#
+# Purpose: Stop Docker from starting containers before the host knows how to
+#          resolve a hostname. Without this, a reboot can leave every
+#          bridge-network container unable to resolve anything until somebody
+#          notices and restarts it by hand.
+#
+# What happens without it, measured on jonathan-node-1 on 2026-10-05:
+#
+#   18:43:28  NetworkManager-wait-online finishes, network-online.target is met
+#   18:43:32  tar1090 starts; dockerd writes its resolv.conf from the host's
+#   18:43:40  docker.service reaches active
+#   18:43:45  NetworkManager finally writes /etc/resolv.conf   <- 13s too late
+#   18:43:46  first getaddrinfo EAI_AGAIN
+#
+# The host was fine. The container was not, and stayed broken for 67 minutes.
+# Containers on host networking are unaffected, which is why this presents as
+# one service being broken rather than as a network fault.
+#
+# Two things combine:
+#
+#   1. network-online.target is not a promise that DNS works. It is satisfied
+#      when NetworkManager reports a connection is up, which happened 17s
+#      before NetworkManager wrote the resolver configuration.
+#
+#   2. Containers on a user-defined bridge get `nameserver 127.0.0.11`,
+#      Docker's embedded resolver, which forwards to whatever upstreams dockerd
+#      read from the host's /etc/resolv.conf at container start. Read it too
+#      early and the container keeps a dead upstream for its whole lifetime:
+#      nothing re-reads it, and the container's own process cannot see or fix
+#      the host file. Only a container restart regenerates it.
+#
+# Scope: one ExecStartPre on docker.service. No change to NetworkManager, to
+# the Docker daemon configuration, or to any container.
+#
+# Related observation, deliberately not acted on here: the rootfs also carries
+# the image build environment's own /etc/resolv.conf until NetworkManager
+# replaces it. On jn1 that was `nameserver 127.0.0.53` plus a
+# *.gx.internal.cloudapp.net search domain, neither of which can be generated
+# on a Pi, since the node has no systemd-resolved unit at all. That file is
+# what dockerd read at 18:43:32 above. Waiting makes its content irrelevant, so
+# clearing it would be hygiene rather than a fix, and it is not worth the risk
+# of leaving an image build without a resolver mid-run.
+#
+# Deliberately NOT done here: pinning explicit nameservers in
+# /etc/docker/daemon.json. It would fix the timing, but it hardcodes resolvers
+# that a given site may not route to, and nodes sit on networks we do not
+# control. Waiting for whatever the site's DHCP actually provides is correct
+# everywhere.
+
+- name: Install wait-for-dns-config
+  copy:
+    src: wait-for-dns-config
+    dest: /usr/local/sbin/wait-for-dns-config
+    mode: '0755'
+
+- name: Create docker.service drop-in directory
+  file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    mode: '0755'
+
+# After=NetworkManager.service as well as the inherited
+# network-online.target: the target alone is what proved insufficient above.
+- name: Make Docker wait for a usable resolver before starting
+  copy:
+    dest: /etc/systemd/system/docker.service.d/10-wait-for-dns.conf
+    mode: '0644'
+    content: |
+      # Installed by owl-os docker_dns_ready. See that role for why.
+      [Unit]
+      After=NetworkManager.service
+      Wants=NetworkManager.service
+
+      [Service]
+      # Bounded, and exits 0 even on timeout: a failing ExecStartPre would stop
+      # the daemon from starting at all, which is worse than the race.
+      ExecStartPre=/usr/local/sbin/wait-for-dns-config 60
