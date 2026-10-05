@@ -32,6 +32,15 @@
 #      nothing re-reads it, and the container's own process cannot see or fix
 #      the host file. Only a container restart regenerates it.
 #
+# Confirmed on two nodes independently on 2026-10-05, and it is latent fleet
+# wide: /etc/resolv.conf was written 5 s after dockerd started on jn1 and 6 s
+# after on fairforest-b. Both carry the identical stale record
+# (`ExtServers: [host(127.0.0.53)]`, *.gx.internal.cloudapp.net search domain),
+# which is how we know it comes from the shared image build rather than
+# anything node specific. On fairforest-b the breakage is masked: it has a
+# local ADS-B receiver, so the proxy serves `X-Data-Source: local` and the dead
+# remote fallback goes unnoticed.
+#
 # Scope: one ExecStartPre on docker.service. No change to NetworkManager, to
 # the Docker daemon configuration, or to any container.
 #
@@ -75,6 +84,13 @@
       Wants=NetworkManager.service
 
       [Service]
-      # Bounded, and exits 0 even on timeout: a failing ExecStartPre would stop
-      # the daemon from starting at all, which is worse than the race.
-      ExecStartPre=/usr/local/sbin/wait-for-dns-config 60
+      # Three independent guards, because docker.service runs with
+      # TimeoutStartSec=infinity: systemd will NOT rescue a hung ExecStartPre,
+      # and a Docker daemon that never starts is far worse than the race.
+      #   1. the script's own deadline (60 s), then it exits 0
+      #   2. timeout(1) as a hard outer bound that does not depend on the
+      #      script's logic being correct. -k 10 matters: plain timeout sends
+      #      only SIGTERM, which a wedged process can ignore, and then timeout
+      #      itself waits forever. -k follows up with SIGKILL.
+      #   3. the leading '-', so systemd ignores a non-zero exit either way
+      ExecStartPre=-/usr/bin/timeout -k 10 70 /usr/local/sbin/wait-for-dns-config 60
