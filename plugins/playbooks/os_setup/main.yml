@@ -87,6 +87,9 @@
     - role: wifi_reconnect # Rejoin the saved network after an outage
       become: True
       become_user: root
+    - role: docker_dns_ready # Don't start containers before DNS resolves
+      become: True
+      become_user: root
     - role: mdns_identity # Per-node ret<node_id>.local, shared owl.local
       become: True
       become_user: root
