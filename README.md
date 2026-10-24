@@ -44,6 +44,50 @@ After install, users can toggle cloud services on/off from `http://owl.local`. T
 
 During a retina-node install, retina-gui holds an `install.lock` in `/data/retina-gui/` to prevent concurrent installs and block cloud service toggling mid-update. The lock is released on completion (success or failure) with a 40-minute stale timeout as a safety net. Mender state scripts write a separate `mender-update.status` file for real-time progress polling (downloading → installing → done).
 
+### docker-compose Update Module
+
+OTA deployments of the retina-node stack run through a fork of Mender's packaged
+`docker-compose` Update Module. The packaged file is moved aside with
+`dpkg-divert` rather than overwritten, so apt stays consistent and the upstream
+version is kept for comparison. The fork changes four things:
+
+- **Images are loaded before the running stack is stopped.** The packaged module
+  stops first and loads second, which held the radar down for the length of the
+  image load. Loading first cut a measured outage from around 148 seconds to
+  about 11.
+- **It takes the restart lock** in `/data/retina-gui/restart.lock`, so an update
+  cannot interleave with a restart started by retina-gui or the RSPduo watchdog.
+- **A failed install no longer stops the stack it was replacing.** The packaged
+  module ran `down` against the new composition while the old one was still
+  live, and because both share one compose project name that took the running
+  stack down with it.
+- **A rollback with nothing staged does nothing.** See below.
+
+#### Rollback states
+
+`rollback_artifact` can be entered in four different store states, and what is
+safe depends on which. The store lives at `/data/mender-docker-compose`.
+
+| State | Directories present | Correct action |
+| --- | --- | --- |
+| Nothing staged (e.g. Download cut short) | `current/` | leave the running stack alone |
+| After commit, before `Cleanup` | `current/` + `cleanup/` | rotate, stop the new one, restart the old |
+| Install failed after the rotation | `new/` + `previous/` | stop `new/`, restart `previous/` |
+| Install cut short before the rotation | `new/` + `current/` | leave the running stack alone |
+
+The first row is the one upstream gets wrong, and it is not hypothetical: a power
+cut during the Download phase left a node with no stack at all. Upstream's
+post-commit branch only asks whether `new/` and `previous/` are absent, which is
+equally true when nothing was ever staged. It renames the live `current/` to
+`new/` and stops it, nothing is restored, and the module still exits 0, so the
+deployment is recorded as successfully rolled back on a node that is no longer
+running anything.
+
+`cleanup/` is what separates the two: `commit_artifact` leaves the superseded
+composition there, so a genuine post-commit rollback always has it. The guard
+therefore returns early only when `new/`, `previous/` and `cleanup/` are all
+absent and `current/` is present.
+
 ## Configuration
 
 ### Node Configuration
