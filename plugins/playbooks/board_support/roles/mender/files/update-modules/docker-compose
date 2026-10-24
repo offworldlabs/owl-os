@@ -336,6 +336,19 @@ commit_artifact() {
 
 rollback_artifact() {
     echo "Rolling back docker-compose artifact ${ARTIFACT_NAME}"
+
+    # FORK: nothing staged means nothing to roll back to, so leave current/
+    # running. cleanup/ is the discriminator: commit_artifact always leaves the
+    # superseded composition there, so a real post-commit rollback has it and
+    # this does not. Must stay above the branch below, which renames current/ to
+    # new/ and would stop the live stack. See the docker-compose Update Module
+    # section of README.md.
+    if [ ! -d "${PERSISTENT_STORE}/new" ] && [ ! -d "${PERSISTENT_STORE}/previous" ] \
+        && [ ! -d "${PERSISTENT_STORE}/cleanup" ] && [ -d "${PERSISTENT_STORE}/current" ]; then
+        echo "nothing was staged to roll back to; leaving the running composition alone"
+        return 0
+    fi
+
     if [ ! -d "${PERSISTENT_STORE}/new" ] && [ ! -d "${PERSISTENT_STORE}/previous" ]; then
         if test -d "${PERSISTENT_STORE}/current"; then
             # This may seem weird (and it is!), but rollback can be requested even

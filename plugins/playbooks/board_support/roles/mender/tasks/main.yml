@@ -176,9 +176,11 @@
 
 # --- docker-compose Update Module: owl-os fork ---
 # The packaged module stops the running stack before it loads the new images,
-# rolls back into the live stack when an install fails early, and fails a
-# committed deployment over an image that is already gone. The fork fixes all
-# three; see the FORK: comments in files/update-modules/docker-compose.
+# rolls back into the live stack when an install fails early, stops the live
+# stack on a rollback that has nothing staged to restore, and fails a committed
+# deployment over an image that is already gone. The fork fixes all four; see
+# the FORK: comments in files/update-modules/docker-compose, and the
+# docker-compose Update Module section of README.md for the rollback states.
 # dpkg-divert moves the packaged file aside rather than overwriting it, so apt
 # stays consistent and the upstream module is kept for comparison or undo.
 # It is diverted outside modules/v3, where Mender would list it as a module.
