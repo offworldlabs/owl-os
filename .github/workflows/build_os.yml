@@ -19,7 +19,10 @@ on:
 jobs:
   build-os:
     name: Build EDI-PI OS image
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: when ubuntu-latest moved to 26.04 the image's
+    # first apt-get update failed with NO_PUBKEY on every Debian key. See the
+    # Requirements section of README.md.
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 
