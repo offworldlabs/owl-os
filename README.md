@@ -181,13 +181,20 @@ This file is `.gitignore`d to prevent accidental commits.
 
 Install [EDI](https://docs.get-edi.io/en/stable/getting_started_v2.html) and dependencies:
 
-**Ubuntu 24.04 or newer:**
+**Ubuntu 24.04** (the release the CI build runs on):
 ```bash
 sudo apt install buildah containers-storage crun curl distrobox \
   dosfstools e2fsprogs fakeroot genimage git mender-artifact \
   mmdebstrap mtools parted python3-sphinx python3-testinfra \
   podman rsync zerofree
 ```
+
+Ubuntu 26.04 does not currently work. A build there fails at the image's first
+`apt-get update`, with `NO_PUBKEY` on every Debian bookworm archive key. The
+image is bootstrapped with `mmdebstrap --variant=minbase`, which does not
+install `debian-archive-keyring`, so it can only verify Debian through the
+keyring mmdebstrap takes from the build host, and on 26.04 that no longer
+works. CI is pinned to 24.04 for the same reason.
 
 ### Build
 ```bash
