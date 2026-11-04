@@ -2,7 +2,8 @@ name: Tests
 
 # The forked docker-compose Update Module, retina-env-guard and the stack-health
 # inventory script run as root on every node. These tests run the real scripts
-# under /bin/sh (dash on Ubuntu, as on the nodes) against a stub docker.
+# under /bin/sh (dash on Ubuntu, as on the nodes) against a stub docker. The RSPduo
+# watchdog is a bash script and runs under bash, against stubs and a fake sysfs.
 
 on:
   push:
@@ -24,5 +25,6 @@ jobs:
           test -x plugins/playbooks/os_setup/roles/radar_data_bootstrap/files/retina-env-guard
           test -x configuration/mender/inventory/mender-inventory-retina-stack
           test -x configuration/mender/inventory/mender-inventory-retina-contact
+          test -x plugins/playbooks/os_setup/roles/radar_packages/files/blah2_rspduo_restart.bash
       - name: Tests
         run: pytest tests/

@@ -14,12 +14,17 @@
 #   retina_env_ok            manifests/.env parses (false: NUL bytes)
 #   retina_compose_ok        compose can load the project
 #   retina_mode              radar | spectrum | sdrconnect (retina-gui's mode.txt)
+#   retina_sdr_recoveries    RSPduo watchdog recoveries in a row since blah2's map
+#                            data was last fresh. 2 or more means a stack restart
+#                            did not help and it is resetting the RSPduo on USB.
+#                            See docs/rspduo-watchdog.md.
 #
 # In spectrum and sdrconnect modes blah2 is stopped on purpose, so it does not
 # make the stack degraded there.
 
 MANIFESTS="${RETINA_STACK_MANIFESTS:-/data/mender-docker-compose/current/manifests}"
 MODE_FILE="${RETINA_STACK_MODE_FILE:-/data/retina-gui/mode.txt}"
+RECOVERIES_FILE="${RETINA_STACK_RECOVERIES_FILE:-/run/blah2-rspduo-watchdog.recoveries}"
 
 if [ ! -f "$MANIFESTS/docker-compose.yaml" ]; then
     echo retina_stack=absent
@@ -45,6 +50,9 @@ running=$(count running)
 restarting=$(count restarting)
 blah2=$(timeout 10 docker inspect -f '{{.State.Status}}' blah2 2>/dev/null) || blah2=missing
 
+recoveries=$(cat "$RECOVERIES_FILE" 2>/dev/null)
+case "$recoveries" in ''|*[!0-9]*) recoveries=0 ;; esac
+
 state=up
 if [ "$running" -eq 0 ]; then
     state=down
@@ -60,4 +68,5 @@ echo "retina_blah2=$blah2"
 echo "retina_env_ok=$env_ok"
 echo "retina_compose_ok=$compose_ok"
 echo "retina_mode=$mode"
+echo "retina_sdr_recoveries=$recoveries"
 exit 0
