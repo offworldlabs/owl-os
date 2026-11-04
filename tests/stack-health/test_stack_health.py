@@ -51,6 +51,7 @@ class Harness(unittest.TestCase):
         os.chmod(docker, 0o755)
         self.write(os.path.join(self.manifests, 'docker-compose.yaml'), 'services: {}\n')
         self.mode_file = os.path.join(self.dir, 'mode.txt')
+        self.recoveries_file = os.path.join(self.dir, 'blah2-rspduo-watchdog.recoveries')
 
     def tearDown(self):
         shutil.rmtree(self.dir)
@@ -63,7 +64,8 @@ class Harness(unittest.TestCase):
         return dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", STUB=self.stub,
                     RETINA_ENV_GUARD_MANIFESTS=self.manifests,
                     RETINA_STACK_MANIFESTS=self.manifests,
-                    RETINA_STACK_MODE_FILE=self.mode_file)
+                    RETINA_STACK_MODE_FILE=self.mode_file,
+                    RETINA_STACK_RECOVERIES_FILE=self.recoveries_file)
 
     def run_script(self, script):
         result = subprocess.run(['/bin/sh', script], env=self.env(), capture_output=True, text=True)
@@ -133,7 +135,7 @@ class TestInventory(Harness):
         self.assertEqual(self.attrs(), {
             'retina_stack': 'up', 'retina_stack_running': '8', 'retina_stack_restarting': '0',
             'retina_blah2': 'running', 'retina_env_ok': 'true', 'retina_compose_ok': 'true',
-            'retina_mode': 'radar'})
+            'retina_mode': 'radar', 'retina_sdr_recoveries': '0'})
 
     def test_nothing_running_is_down(self):
         self.healthy()
@@ -173,6 +175,18 @@ class TestInventory(Harness):
         self.healthy()
         os.remove(os.path.join(self.stub, 'blah2'))
         self.assertEqual(self.attrs()['retina_blah2'], 'missing')
+
+    def test_watchdog_recoveries_are_reported(self):
+        # Two or more means a stack restart did not clear the RSPduo and the
+        # watchdog is resetting it on USB (docs/rspduo-watchdog.md).
+        self.healthy()
+        self.write(self.recoveries_file, '3\n')
+        self.assertEqual(self.attrs()['retina_sdr_recoveries'], '3')
+
+    def test_an_unreadable_recoveries_file_reads_as_zero(self):
+        self.healthy()
+        self.write(self.recoveries_file, 'garbage')
+        self.assertEqual(self.attrs()['retina_sdr_recoveries'], '0')
 
     def test_no_composition_is_absent(self):
         shutil.rmtree(os.path.join(self.dir, 'current'))
