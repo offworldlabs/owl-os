@@ -218,3 +218,31 @@ edi -v project clean owl-os-pi5.yml
 ## Credits
 
 Built using [EDI-PI](https://github.com/lueschem/edi-pi) by [lueschem](https://github.com/lueschem).
+
+## License
+
+Copyright (C) 2026 Offworld Labs
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero
+General Public License for more details.
+
+The full licence text is in [LICENSE](LICENSE).
+
+### Third-party code
+
+Parts of this repository are derived from software released under the MIT
+License. Those parts remain available under the MIT License, and their
+copyright and permission notices are reproduced in [LICENSE-MIT](LICENSE-MIT),
+as that licence requires. The combined work is distributed under the
+GNU Affero General Public License, version 3 or later.
+
+Some scripts under `plugins/postprocessing_commands` are licensed under the
+GNU Lesser General Public License (see the `COPYING` file in that folder).
+Files that carry their own licence header keep that licence.
